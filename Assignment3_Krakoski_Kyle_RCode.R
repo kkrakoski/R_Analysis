@@ -1,0 +1,115 @@
+library(ggplot2)
+library(dplyr)
+library(arm)
+#Read acs_ny.csv into file, create a dataframe of the data, and create a new binary column showing 1 if the FamilyIncome row > $150,000 and 0 if it's not.
+acs = read.csv('acs_ny.csv')
+df_acs <- data.frame(acs)
+df_acs$Bi_income <- with(df_acs, ifelse(FamilyIncome > 150000, 1, 0)) 
+
+acs_model <- glm(formula = Bi_income~ Acres + NumBedrooms + NumChildren + NumPeople + NumRooms + NumUnits + NumVehicles + NumWorkers + OwnRent
+                 + YearBuilt + HouseCosts + ElectricBill + FoodStamp + HeatingFuel + Insurance + Language, data = df_acs, family = "binomial")
+acs_model
+#Perform summary of acs_model and sort by p-value
+modcoef <- summary(acs_model)[["coefficients"]]
+modcoef[order(modcoef[ , 4]), ]  
+#Heating source, Year Built, Acres, Language, all have p values under 0.05, so I removed them. 
+
+acs_model2 <- glm(formula = Bi_income~ NumBedrooms + NumChildren + NumPeople + NumRooms + NumUnits + NumVehicles + NumWorkers + OwnRent 
+                  + HouseCosts + ElectricBill + FoodStamp + Insurance, data = df_acs, family = "binomial")
+acs_model2
+summary(acs_model2)
+
+#coefficent plot
+coefplot(acs_model2)
+coefplot(acs_model)
+
+#kernel Density plot
+d <- density(df_acs$FamilyIncome) # returns the density data
+plot(d, main = "Kernel Density of Family Income")
+polygon(d, col ="red", border = "blue") # plots the results
+
+#Exercise 4, cleaning and imputation
+
+#Data is missing completely at random based on our current knowledge.  Would be best to delete data, bc again, we have no knowledge of how data was collected or why values are invalid.
+library(mice)
+library(VIM)
+dental = read.csv('BestSmileDental.csv')
+new_dental = data.frame(dental)
+ggplot(new_dental, aes(x=Year, y=Customers))+geom_point()
+new_dental$Customers <- as.numeric(new_dental$Customers) #Converts column to numeric data type.  This converts any cells with non-numeric characters to NA to easily be removed later. Also allows me to get summary statistics by making the column numeric type instead of character type.
+#summary(new_dental) Looked at dataframe statistics to find potential problem cells easier.  Also, the year and month had reasonable values- no NA's, or outliers.  A look through the raw csv file showed no fractions either.  If the csv file wasn't short enough to visually inspect like it is now, I'd add a line to test for fractions.
+new_dental$Customers[new_dental$Customers < 0] <-NA #Had at least one value less than 0, so changed all less than 0 values to NA
+new_dental$Customers[new_dental$Customers > 100000] <-NA #Since median was only 1,775, changed values much higher than that.to NA
+# summary(new_dental) Ran another check, found decimal values, which doesn't make sense in this context
+new_dental$Customers[new_dental$Customers == 0.0015] <- NA 
+summary(new_dental) # All data is now clean or set to NA.
+which(is.na(new_dental$Customers)) #Find row location of NA values
+new_dental[c(8, 21, 22, 23, 38, 51, 55, 68, 70, 78),]
+#Mice imputation
+my_imp_dental <- mice(new_dental, m=5)
+my_imp_dental$imp$Customers
+clean_imp_dental <-complete(my_imp_dental) #Used the default, which was the first imputation calculated
+print(clean_imp_dental) #shows the data with imputed values
+clean_imp_dental = data.frame(clean_imp_dental)
+clean_imp_dental[c(8, 21, 22, 23, 38, 51, 55, 68, 70, 78),]
+ggplot(clean_imp_dental, aes(x=Year, y=Customers))+geom_point()#Plot new scatterplot with imputed values
+
+#Exercise 4, Holt-Winters model
+
+#Holt-Winters let R calculate best values for alpha
+plot.ts(clean_imp_dental$Customers, xlim = c(0,97), ylim =c(0, 7000) )
+dental_hw.mean <-HoltWinters(clean_imp_dental$Customers, gamma = FALSE)
+dental_hw.mean
+dental_hw.predict <- predict(dental_hw.mean, n.ahead = 12, prediction.interval = TRUE) 
+dental_hw.predict
+plot.ts(clean_imp_dental$Customers, xlim = c(0,97), ylim =c(0, 10000) )
+lines(dental_hw.mean$fitted[,1], col = "green") #Fits relatively well
+lines(dental_hw.predict[,1], col = "blue")
+lines(dental_hw.predict[,2], col = "orange")
+lines(dental_hw.predict[,3], col = "red")
+
+
+
+#Exercise 4, ARIMA model
+
+library(forecast)
+dental_ts <- ts(clean_imp_dental$Customers)
+acf(dental_ts) #Large spike dies out, some autoregression
+pacf(dental_ts) #Large spikes at beginning, Indicates both autoregressive and moving averages., so ARIMA
+dental_best_arima <- auto.arima(x = dental_ts) #Fit ARIMA model
+dental_best_arima #Given drift value w/ SE, so we were right in accounting for drift QID = 1211.95
+
+#Check ACF and PACF values of ARIMA model residuals
+acf(dental_best_arima$residuals) #Better than before, only starting value at one, only only value above blue line.
+pacf(dental_best_arima$residuals) #One value beyond blue line, but better than before
+
+#Providing my own p,d,q values
+dental_best_arima2 <- arima(dental_ts, order=c(2,2,2))
+dental_best_arima2
+acf(dental_best_arima2$residuals)
+pacf(dental_best_arima2$residuals)
+acf(dental_best_arima$residuals) #Better than before, only starting value at one, only only value above blue line.  Aso ACF  values were more compact, and no PACF values over blue line.  
+pacf(dental_best_arima$residuals)
+
+#plot predictions for next year
+dental_best_arima2_forecast <- forecast(dental_best_arima2, h = 12)
+dental_best_arima2_forecast
+plot(forecast(dental_best_arima2_forecast))
+
+#Exercise 4, compare models
+
+# HW 
+forecast_hw = HoltWinters(clean_imp_dental$Customers, gamma = FALSE)
+forecast_hw_predict = forecast(forecast_hw, h = 12)
+print("HW Model: ")
+accuracy(forecast_hw_predict)  #ARIMA is best, all measurement errors seem significantly smaller.
+
+#ARIMA
+
+forecast_arima = arima(dental_ts, order = c(2,2,2))
+forecast_arima = forecast(forecast_arima, h = 12)
+print("ARIMA Model: ")
+accuracy(forecast_arima)
+
+
+
